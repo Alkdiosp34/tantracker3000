@@ -93,6 +93,9 @@ wss.on('connection', (ws, req) => {
     if (!token || !role) { ws.close(1008, 'Not authenticated'); return; }
     const room = getRoom(token);
 
+    // ── KEEPALIVE PING ────────────────────────────────────────
+    if (msg.type === 'ping') return; // silently ignore, just keeps connection alive
+
     // ── LOCATION ──────────────────────────────────────────────
     if (msg.type === 'location') {
       room.lastLocation = msg;
