@@ -81,7 +81,7 @@ wss.on('connection', (ws, req) => {
         return;
       }
 
-      if (msg.type === 'flash' || msg.type === 'stop_flash' || msg.type === 'alarm' || msg.type === 'stop_alarm') {
+      if (['flash','stop_flash','alarm','stop_alarm','screen_on','screen_off'].includes(msg.type)) {
         console.log('[>] Command: ' + msg.type);
         if (room.device && room.device.readyState === 1) safeSend(room.device, msg);
         return;
