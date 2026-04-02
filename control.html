@@ -308,6 +308,7 @@ footer {
     <div class="sidebar-tabs">
       <div class="tab active" id="tabDir" onclick="switchTab('dir')">DIRECTIONS</div>
       <div class="tab" id="tabCtrl" onclick="switchTab('ctrl')">CONTROLS</div>
+      <div class="tab" id="tabHist" onclick="switchTab('hist')">HISTORY</div>
     </div>
 
     <!-- DIRECTIONS TAB -->
@@ -370,10 +371,13 @@ footer {
       </div>
 
       <div>
-        <div class="section-label">▸ Lights</div>
+        <div class="section-label">▸ Screen</div>
         <div class="btn-group">
-          <button class="cmd-btn danger" id="btnFlash" onclick="toggleFlash()">
-            <span class="btn-icon">⚡</span> FLASH LIGHTS
+          <button class="cmd-btn" onclick="sendCmd('screen_on')">
+            <span class="btn-icon">◐</span> WAKE SCREEN
+          </button>
+          <button class="cmd-btn" onclick="sendCmd('screen_off')">
+            <span class="btn-icon">○</span> SCREEN OFF
           </button>
         </div>
       </div>
@@ -398,6 +402,45 @@ footer {
       </div>
 
     </div>
+    <!-- HISTORY TAB -->
+    <div class="tab-panel" id="panelHist">
+
+      <div>
+        <div class="section-label">▸ Time Range</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;">
+          <button class="cmd-btn" onclick="loadHistory(1)" style="padding:8px;justify-content:center;font-size:10px;">1D</button>
+          <button class="cmd-btn" onclick="loadHistory(7)" style="padding:8px;justify-content:center;font-size:10px;">7D</button>
+          <button class="cmd-btn" onclick="loadHistory(30)" style="padding:8px;justify-content:center;font-size:10px;">30D</button>
+          <button class="cmd-btn" onclick="loadHistory(60)" style="padding:8px;justify-content:center;font-size:10px;">60D</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="section-label">▸ Summary</div>
+        <div class="telem-grid">
+          <div class="telem-cell"><div class="telem-label">PINGS</div><div class="telem-val" id="hPings">--</div></div>
+          <div class="telem-cell"><div class="telem-label">DAYS</div><div class="telem-val" id="hDays">--</div></div>
+          <div class="telem-cell"><div class="telem-label">FIRST SEEN</div><div class="telem-val" id="hFirst" style="font-size:10px;">--</div></div>
+          <div class="telem-cell"><div class="telem-label">LAST SEEN</div><div class="telem-val" id="hLast" style="font-size:10px;">--</div></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="section-label">▸ Trail</div>
+        <div style="font-size:10px;color:var(--muted);line-height:1.6;" id="hStatus">Select a time range above to load history.</div>
+      </div>
+
+      <div class="btn-group">
+        <button class="cmd-btn" onclick="clearHistoryTrail()">
+          <span class="btn-icon">✕</span> CLEAR TRAIL
+        </button>
+        <button class="cmd-btn" onclick="exportHistory()">
+          <span class="btn-icon">↓</span> EXPORT CSV
+        </button>
+      </div>
+
+    </div>
+
   </div>
 
   <!-- MAP -->
@@ -507,8 +550,9 @@ function lcheck() {
 function switchTab(t) {
   document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
   document.querySelectorAll('.tab-panel').forEach(el => el.classList.remove('active'));
-  document.getElementById('tab' + (t === 'dir' ? 'Dir' : 'Ctrl')).classList.add('active');
-  document.getElementById('panel' + (t === 'dir' ? 'Dir' : 'Ctrl')).classList.add('active');
+  const map = { dir: 'Dir', ctrl: 'Ctrl', hist: 'Hist' };
+  document.getElementById('tab' + map[t]).classList.add('active');
+  document.getElementById('panel' + map[t]).classList.add('active');
 }
 
 // ════════════════════════════════════════════════
@@ -1027,6 +1071,116 @@ function endCall() {
 setInterval(() => {
   document.getElementById('fTime').textContent = new Date().toLocaleTimeString('en-US',{hour12:false});
 }, 1000);
+
+// ════════════════════════════════════════════════
+// HISTORY
+// ════════════════════════════════════════════════
+const SERVER_URL = 'https://tantracker3000.onrender.com';
+let historyTrail = null;
+let historyData = [];
+
+async function loadHistory(days) {
+  document.getElementById('hStatus').textContent = 'Loading ' + days + ' days of history...';
+  document.getElementById('hPings').textContent = '--';
+  document.getElementById('hDays').textContent = '--';
+  document.getElementById('hFirst').textContent = '--';
+  document.getElementById('hLast').textContent = '--';
+
+  try {
+    const res = await fetch(`${SERVER_URL}/history?token=${CLIENT_TOKEN}&days=${days}`);
+    if (!res.ok) throw new Error('Server error ' + res.status);
+    const data = await res.json();
+    historyData = data.pings;
+
+    if (!historyData.length) {
+      document.getElementById('hStatus').textContent = 'No history found for this period.';
+      return;
+    }
+
+    // Update summary
+    document.getElementById('hPings').textContent = historyData.length.toLocaleString();
+    document.getElementById('hDays').textContent = days;
+    document.getElementById('hFirst').textContent = new Date(historyData[0].ts).toLocaleDateString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+    document.getElementById('hLast').textContent = new Date(historyData[historyData.length-1].ts).toLocaleDateString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+    document.getElementById('hStatus').textContent = `Showing ${historyData.length.toLocaleString()} pings over ${days} days.`;
+
+    // Draw trail on map
+    drawHistoryTrail(historyData);
+
+  } catch(e) {
+    document.getElementById('hStatus').textContent = 'Failed to load: ' + e.message;
+  }
+}
+
+function drawHistoryTrail(pings) {
+  // Remove existing trail
+  if (historyTrail) { map.removeLayer(historyTrail); historyTrail = null; }
+
+  const coords = pings.map(p => [p.lat, p.lon]);
+  if (coords.length < 2) return;
+
+  // Draw as a polyline with color gradient — amber for old, green for recent
+  historyTrail = L.polyline(coords, {
+    color: '#ffaa00',
+    weight: 2,
+    opacity: 0.6,
+    dashArray: '4 4'
+  }).addTo(map);
+
+  // Add start and end markers
+  const startIcon = L.divIcon({
+    html: `<div style="width:10px;height:10px;background:#ffaa00;border-radius:50%;border:2px solid #080d08;"></div>`,
+    iconSize:[10,10], iconAnchor:[5,5], className:''
+  });
+  const endIcon = L.divIcon({
+    html: `<div style="width:10px;height:10px;background:#00ff88;border-radius:50%;border:2px solid #080d08;"></div>`,
+    iconSize:[10,10], iconAnchor:[5,5], className:''
+  });
+
+  L.marker(coords[0], { icon: startIcon })
+    .bindTooltip('Start: ' + new Date(pings[0].ts).toLocaleString(), { direction:'top' })
+    .addTo(map);
+  L.marker(coords[coords.length-1], { icon: endIcon })
+    .bindTooltip('End: ' + new Date(pings[pings.length-1].ts).toLocaleString(), { direction:'top' })
+    .addTo(map);
+
+  // Fit map to trail
+  map.fitBounds(historyTrail.getBounds(), { padding:[30,30] });
+}
+
+function clearHistoryTrail() {
+  if (historyTrail) { map.removeLayer(historyTrail); historyTrail = null; }
+  historyData = [];
+  document.getElementById('hStatus').textContent = 'Trail cleared.';
+  document.getElementById('hPings').textContent = '--';
+  document.getElementById('hDays').textContent = '--';
+  document.getElementById('hFirst').textContent = '--';
+  document.getElementById('hLast').textContent = '--';
+}
+
+function exportHistory() {
+  if (!historyData.length) {
+    document.getElementById('hStatus').textContent = 'No data to export. Load history first.';
+    return;
+  }
+  const rows = ['timestamp,lat,lon,mph,accuracy_m,moving,voltage'];
+  historyData.forEach(p => {
+    rows.push([
+      new Date(p.ts).toISOString(),
+      p.lat.toFixed(6), p.lon.toFixed(6),
+      p.mph || 0,
+      Math.round(p.acc || 0),
+      p.moving ? 'yes' : 'no',
+      p.voltage || ''
+    ].join(','));
+  });
+  const blob = new Blob([rows.join('
+')], { type:'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'tantracker3000_history_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+}
 
 function initApp() {
   // If Leaflet already loaded, go immediately. Otherwise wait for onload callback.
