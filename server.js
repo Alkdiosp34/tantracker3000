@@ -1,95 +1,125 @@
-// SENTINEL — Backend Relay Server
-// Node.js + ws (WebSocket library)
-//
-// Deploy to Render.com (free tier):
-//   1. Push this file + package.json to a GitHub repo
-//   2. Create new "Web Service" on Render, connect the repo
-//   3. Build command: npm install
-//   4. Start command: node server.js
-//   5. Copy your Render URL and paste it into device.html and control.html as WS_URL
-//      (change https:// to wss://)
-
+// TanTracker3000 — Backend Relay Server
 const { WebSocketServer } = require('ws');
 const http = require('http');
 
 const PORT = process.env.PORT || 8080;
 
-// Simple HTTP server (Render needs an HTTP endpoint to stay alive)
+// ── CUSTOMER TOKENS ───────────────────────────────────────────
+// Each customer gets a unique token. Add one line per customer.
+const VALID_TOKENS = new Set([
+  'tt3k-6b013c92cface5653bcd4485', // owner
+]);
+
+// ── RATE LIMITING ─────────────────────────────────────────────
+const RATE_LIMIT = new Map();
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const entry = RATE_LIMIT.get(ip);
+  if (!entry || now > entry.resetAt) {
+    RATE_LIMIT.set(ip, { count: 1, resetAt: now + 60000 });
+    return true;
+  }
+  if (entry.count >= 10) return false;
+  entry.count++;
+  return true;
+}
+
+// ── ROOMS (one per token) ─────────────────────────────────────
+const rooms = new Map();
+function getRoom(token) {
+  if (!rooms.has(token)) rooms.set(token, { device: null, controls: [], lastLocation: null });
+  return rooms.get(token);
+}
+
+// ── HTTP SERVER ───────────────────────────────────────────────
 const httpServer = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('SENTINEL relay active\n');
+  res.end('TanTracker3000 relay active\n');
 });
 
 const wss = new WebSocketServer({ server: httpServer });
 
-// Track connected clients
-let deviceClient = null;   // The Android phone in the car
-let controlClients = [];   // Your control panels (phone/tablet/desktop)
+wss.on('connection', (ws, req) => {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
 
-// Last known location (so new control panels get it immediately on connect)
-let lastLocation = null;
+  if (!checkRateLimit(ip)) {
+    ws.close(1008, 'Rate limit exceeded');
+    return;
+  }
 
-wss.on('connection', (ws) => {
-  console.log('[+] Client connected');
   let role = null;
+  let token = null;
+
+  // Kick unauthenticated clients after 5 seconds
+  const authTimeout = setTimeout(() => {
+    if (!role) {
+      console.warn(`[!] Unauthenticated client kicked from ${ip}`);
+      ws.close(1008, 'Authentication timeout');
+    }
+  }, 5000);
 
   ws.on('message', (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
 
-    // ── REGISTRATION ──────────────────────────────────────
+    // ── REGISTRATION ──────────────────────────────────────────
     if (msg.type === 'register') {
+      if (!msg.token || !VALID_TOKENS.has(msg.token)) {
+        console.warn(`[!] Invalid token from ${ip}`);
+        ws.close(1008, 'Invalid token');
+        return;
+      }
+      clearTimeout(authTimeout);
+      token = msg.token;
       role = msg.role;
+      const room = getRoom(token);
 
       if (role === 'device') {
-        deviceClient = ws;
-        console.log('[*] Device registered');
-        // Notify all control panels
-        broadcast(controlClients, { type: 'device_online' });
+        if (room.device && room.device.readyState === 1) room.device.close();
+        room.device = ws;
+        console.log(`[*] Device registered`);
+        broadcast(room.controls, { type: 'device_online' });
       }
 
       if (role === 'control') {
-        controlClients.push(ws);
-        console.log(`[*] Control panel registered (${controlClients.length} active)`);
-        // Send last known location immediately
-        if (lastLocation) {
-          safeSend(ws, lastLocation);
-        }
+        room.controls.push(ws);
+        console.log(`[*] Control panel registered (${room.controls.length} active)`);
+        if (room.lastLocation) safeSend(ws, room.lastLocation);
       }
       return;
     }
 
-    // ── LOCATION from device → broadcast to all controls ──
+    // Reject unauthenticated messages
+    if (!token || !role) { ws.close(1008, 'Not authenticated'); return; }
+    const room = getRoom(token);
+
+    // ── LOCATION ──────────────────────────────────────────────
     if (msg.type === 'location') {
       room.lastLocation = msg;
       broadcast(room.controls, msg);
       return;
     }
 
-    // ── FINAL PING ─────────────────────────────────────────
     if (msg.type === 'location_final') {
       room.lastLocation = msg;
       broadcast(room.controls, msg);
-      console.log(`[!] FINAL PING — token ${token.slice(0,8)}... voltage: ${msg.voltage}V`);
+      console.log(`[!] Final ping received`);
       return;
     }
 
-    // ── VOLTAGE ALERTS ─────────────────────────────────────
+    // ── VOLTAGE ALERTS ────────────────────────────────────────
     if (msg.type === 'voltage_alert') {
-      const val = msg.voltage != null ? msg.voltage + (msg.level.startsWith('phone') ? '%' : 'V') : '';
-      console.log(`[!] Voltage alert: ${msg.level} ${val} — token ${token.slice(0,8)}...`);
       broadcast(room.controls, msg);
       return;
     }
 
-    // ── COMMANDS from control → device ─────────────────────
+    // ── COMMANDS control → device ─────────────────────────────
     if (['flash', 'stop_flash', 'alarm'].includes(msg.type)) {
-      console.log(`[>] Command: ${msg.type} — token ${token.slice(0,8)}...`);
       if (room.device && room.device.readyState === 1) safeSend(room.device, msg);
       return;
     }
 
-    // ── WEBRTC SIGNALING ───────────────────────────────────
+    // ── WEBRTC ────────────────────────────────────────────────
     if (msg.type === 'webrtc_offer') {
       if (room.device && room.device.readyState === 1) safeSend(room.device, msg);
       return;
@@ -114,7 +144,6 @@ wss.on('connection', (ws) => {
     clearTimeout(authTimeout);
     if (!token || !role) return;
     const room = getRoom(token);
-    console.log(`[-] Client disconnected — token ${token.slice(0,8)}...`);
     if (role === 'device') {
       room.device = null;
       broadcast(room.controls, { type: 'device_offline' });
@@ -122,27 +151,21 @@ wss.on('connection', (ws) => {
     if (role === 'control') {
       room.controls = room.controls.filter(c => c !== ws);
     }
+    console.log(`[-] Client disconnected (${role})`);
   });
 
   ws.on('error', (err) => console.error('WS error:', err.message));
 });
 
 function safeSend(ws, obj) {
-  try {
-    if (ws.readyState === 1) ws.send(JSON.stringify(obj));
-  } catch (e) {
-    console.error('Send error:', e.message);
-  }
+  try { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); } catch(e) {}
 }
-
 function broadcast(clients, obj) {
   clients.forEach(c => safeSend(c, obj));
 }
 
-// Keep Render's free tier alive (it spins down after inactivity)
-// Optional: ping self every 14 minutes using an external uptime monitor like UptimeRobot
 setInterval(() => {
-  console.log(`[*] Heartbeat — device: ${deviceClient ? 'connected' : 'offline'}, controls: ${controlClients.length}`);
+  console.log(`[heartbeat] rooms: ${rooms.size}`);
 }, 60000);
 
-httpServer.listen(PORT, () => console.log(`SENTINEL relay listening on port ${PORT}`));
+httpServer.listen(PORT, () => console.log(`TanTracker3000 relay listening on port ${PORT}`));
