@@ -168,7 +168,7 @@ wss.on('connection', (ws) => {
 
       if (msg.type === 'voltage_alert') { safeBroadcast(room.controls, msg); return; }
 
-      if (['alarm','stop_alarm','screen_on','screen_off'].includes(msg.type)) {
+      if (['screen_off'].includes(msg.type)) {
         console.log('[>] Command: ' + msg.type);
         if (room.device && room.device.readyState === 1) safeSend(room.device, msg);
         return;
