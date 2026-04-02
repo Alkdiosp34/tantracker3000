@@ -30,8 +30,11 @@ wss.on('connection', (ws, req) => {
   let authTimer = null;
 
   authTimer = setTimeout(() => {
-    if (!role) ws.terminate();
-  }, 5000);
+    if (!role) {
+      console.warn('[!] Auth timeout — no register received, terminating');
+      ws.terminate();
+    }
+  }, 15000);
 
   ws.on('message', (raw) => {
     try {
@@ -52,7 +55,7 @@ wss.on('connection', (ws, req) => {
         if (role === 'device') {
           if (room.device && room.device.readyState === 1) room.device.terminate();
           room.device = ws;
-          console.log('[*] Device registered');
+          console.log('[*] Device registered — token ok');
           safeBroadcast(room.controls, { type: 'device_online' });
         }
 
@@ -78,7 +81,7 @@ wss.on('connection', (ws, req) => {
         return;
       }
 
-      if (msg.type === 'flash' || msg.type === 'stop_flash' || msg.type === 'alarm') {
+      if (msg.type === 'flash' || msg.type === 'stop_flash' || msg.type === 'alarm' || msg.type === 'stop_alarm') {
         console.log('[>] Command: ' + msg.type);
         if (room.device && room.device.readyState === 1) safeSend(room.device, msg);
         return;
