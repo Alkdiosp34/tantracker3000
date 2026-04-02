@@ -21,22 +21,27 @@ async function initDB() {
       url: process.env.TURSO_URL,
       authToken: process.env.TURSO_TOKEN,
     });
-    await db.execute(`
-      CREATE TABLE IF NOT EXISTS pings (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        token TEXT NOT NULL,
-        ts INTEGER NOT NULL,
-        lat REAL NOT NULL,
-        lon REAL NOT NULL,
-        mph REAL,
-        acc REAL,
-        moving INTEGER,
-        voltage REAL
-      )
-    `);
-    await db.execute(`
-      CREATE INDEX IF NOT EXISTS idx_token_ts ON pings(token, ts)
-    `);
+    // Use batch to create table and index in one shot
+    await db.batch([
+      {
+        sql: `CREATE TABLE IF NOT EXISTS pings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          token TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          lat REAL NOT NULL,
+          lon REAL NOT NULL,
+          mph REAL,
+          acc REAL,
+          moving INTEGER,
+          voltage REAL
+        )`,
+        args: []
+      },
+      {
+        sql: `CREATE INDEX IF NOT EXISTS idx_token_ts ON pings(token, ts)`,
+        args: []
+      }
+    ], 'write');
     console.log('[db] Turso connected and ready');
     pruneHistory();
   } catch(e) {
