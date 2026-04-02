@@ -1,13 +1,14 @@
 {
   "name": "tantracker3000-relay",
   "version": "1.0.0",
-  "description": "SENTINEL car tracker relay server",
+  "description": "TanTracker3000 relay server",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "ws": "^8.16.0"
+    "ws": "^8.16.0",
+    "@libsql/client": "^0.6.0"
   },
   "engines": {
     "node": ">=18"
