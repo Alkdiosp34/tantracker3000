@@ -61,76 +61,65 @@ wss.on('connection', (ws) => {
 
     // ── LOCATION from device → broadcast to all controls ──
     if (msg.type === 'location') {
-      lastLocation = msg;
-      broadcast(controlClients, msg);
+      room.lastLocation = msg;
+      broadcast(room.controls, msg);
       return;
     }
 
-    // ── FINAL PING (sent just before low-voltage shutdown) ──
+    // ── FINAL PING ─────────────────────────────────────────
     if (msg.type === 'location_final') {
-      lastLocation = msg;
-      broadcast(controlClients, msg);
-      console.log(`[!] FINAL PING received — voltage: ${msg.voltage}V`);
+      room.lastLocation = msg;
+      broadcast(room.controls, msg);
+      console.log(`[!] FINAL PING — token ${token.slice(0,8)}... voltage: ${msg.voltage}V`);
       return;
     }
 
-    // ── VOLTAGE ALERTS from device → control panels ────────
+    // ── VOLTAGE ALERTS ─────────────────────────────────────
     if (msg.type === 'voltage_alert') {
       const val = msg.voltage != null ? msg.voltage + (msg.level.startsWith('phone') ? '%' : 'V') : '';
-      console.log(`[!] Voltage alert: ${msg.level} ${val}`);
-      broadcast(controlClients, msg);
+      console.log(`[!] Voltage alert: ${msg.level} ${val} — token ${token.slice(0,8)}...`);
+      broadcast(room.controls, msg);
       return;
     }
 
-    // ── COMMANDS from control → device ────────────────────
+    // ── COMMANDS from control → device ─────────────────────
     if (['flash', 'stop_flash', 'alarm'].includes(msg.type)) {
-      console.log(`[>] Command: ${msg.type}`);
-      if (deviceClient && deviceClient.readyState === 1) {
-        safeSend(deviceClient, msg);
-      }
+      console.log(`[>] Command: ${msg.type} — token ${token.slice(0,8)}...`);
+      if (room.device && room.device.readyState === 1) safeSend(room.device, msg);
       return;
     }
 
-    // ── WEBRTC SIGNALING ──────────────────────────────────
-    // offer: control → device
+    // ── WEBRTC SIGNALING ───────────────────────────────────
     if (msg.type === 'webrtc_offer') {
-      console.log('[~] WebRTC offer relayed to device');
-      if (deviceClient && deviceClient.readyState === 1) {
-        safeSend(deviceClient, msg);
-      }
+      if (room.device && room.device.readyState === 1) safeSend(room.device, msg);
       return;
     }
-
-    // answer: device → control (first connected panel)
     if (msg.type === 'webrtc_answer') {
-      console.log('[~] WebRTC answer relayed to control');
-      const ctrl = controlClients.find(c => c.readyState === 1);
+      const ctrl = room.controls.find(c => c.readyState === 1);
       if (ctrl) safeSend(ctrl, msg);
       return;
     }
-
-    // ICE candidates: relay based on sender role
     if (msg.type === 'ice_candidate') {
       if (role === 'device') {
-        const ctrl = controlClients.find(c => c.readyState === 1);
+        const ctrl = room.controls.find(c => c.readyState === 1);
         if (ctrl) safeSend(ctrl, msg);
       } else {
-        if (deviceClient && deviceClient.readyState === 1) {
-          safeSend(deviceClient, msg);
-        }
+        if (room.device && room.device.readyState === 1) safeSend(room.device, msg);
       }
       return;
     }
   });
 
   ws.on('close', () => {
-    console.log('[-] Client disconnected');
+    if (!token) return;
+    const room = getRoom(token);
+    console.log(`[-] Client disconnected — token ${token.slice(0,8)}...`);
     if (role === 'device') {
-      deviceClient = null;
-      broadcast(controlClients, { type: 'device_offline' });
+      room.device = null;
+      broadcast(room.controls, { type: 'device_offline' });
     }
     if (role === 'control') {
-      controlClients = controlClients.filter(c => c !== ws);
+      room.controls = room.controls.filter(c => c !== ws);
     }
   });
 
